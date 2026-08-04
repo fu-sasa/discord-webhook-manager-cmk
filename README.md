@@ -5,7 +5,7 @@
 - 登録済みの **named webhook** に名前で送信、または Webhook URL を直接指定して送信
 - **即時送信**と**日時指定の予約送信**、**cron による定期実行**
 - Embed ビルダー付きの WebUI と、同じ機能を提供する **REST API**
-- 管理者パスワードのみのシンプルな認証（ユーザー管理なし）
+- **Discord アカウントでログイン**（OAuth2）。管理者が許可したメールアドレスのみ
 - 送信失敗時の自動リトライと Discord へのアラート通知
 
 ## クイックスタート（サーバー）
@@ -16,8 +16,18 @@ sudo /opt/dwm/deploy/install.sh
 ```
 
 Node.js の導入、サービスユーザー作成、`.env` 生成、systemd 登録、日次バックアップの設定までを行い、
-初回の管理パスワードを一度だけ表示します。公開は Cloudflare Tunnel の Public Hostname を
-`http://localhost:8080` に向けて追加してください（[運用マニュアル](docs/OPERATIONS.md)参照）。
+初回の緊急用パスワードを一度だけ表示します。公開は Cloudflare Tunnel の Public Hostname を
+`127.0.0.1:8080` に向けて追加してください（[運用マニュアル](docs/OPERATIONS.md)参照）。
+
+続いて Discord ログインを設定します。
+
+```bash
+sudo /opt/dwm/deploy/set-discord-auth.sh
+```
+
+Discord 開発者ポータルでアプリを作り、Redirect URI に
+`https://<公開URL>/auth/discord/callback` を登録したうえで、Client ID / Secret と初期管理者の
+メールアドレスを入力してください。以降は WebUI の「管理者」画面から追加・削除できます。
 
 ## ローカル開発
 
@@ -63,7 +73,8 @@ src/
   config.ts            環境変数の読み込みと検証
   db/                  SQLite 接続とスキーマ（node:sqlite、ネイティブ依存なし）
   lib/                 暗号処理・時刻/cron・バリデーション・HTML テンプレート
-  services/            named webhook / APIキー / ジョブ / 定期実行 / 送信 / アラート
+  services/            管理者 / Discord OAuth / named webhook / APIキー
+                       / ジョブ / 定期実行 / 送信 / アラート
   scheduler/worker.ts  キューの実行、リトライ、cron 展開
   routes/              REST API と WebUI
   views/               サーバーサイドレンダリングの各画面

@@ -60,9 +60,17 @@ if (!/^[0-9a-fA-F]{64}$/.test(appSecret)) {
   throw new Error('APP_SECRET must be 64 hex characters (32 bytes). Generate: openssl rand -hex 32');
 }
 
+const discordClientId = str('DISCORD_CLIENT_ID', '');
+const discordClientSecret = str('DISCORD_CLIENT_SECRET', '');
+
 export const config = {
   appSecret,
   initialAdminPassword: process.env.ADMIN_PASSWORD ?? '',
+  discordClientId,
+  discordClientSecret,
+  /** Discord login is only offered once both halves of the app credential exist. */
+  discordEnabled: Boolean(discordClientId && discordClientSecret),
+  bootstrapAdminEmail: str('BOOTSTRAP_ADMIN_EMAIL', '').trim().toLowerCase(),
   host: str('HOST', '127.0.0.1'),
   port: int('PORT', 8080),
   publicBaseUrl: str('PUBLIC_BASE_URL', 'http://localhost:8080').replace(/\/+$/, ''),

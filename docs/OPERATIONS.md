@@ -111,6 +111,55 @@ curl -s https://webhook-manager-cmk.uslog.tech/healthz
 > `/api/` パスをバイパスするポリシー、または Service Token を発行してください（Access を
 > 通さないと API リクエストがログイン画面に飛ばされます）。
 
+### 1-2. Discord ログインの設定
+
+WebUI のログインは Discord OAuth2 です。許可リストに登録されたメールアドレスの Discord
+アカウントだけがログインできます。
+
+#### Discord 開発者ポータル側
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**
+   （既存のアプリでも可）
+2. **OAuth2** → **Redirects** → **Add Redirect** に次を**完全一致**で登録して保存
+
+   ```
+   https://webhook-manager-cmk.uslog.tech/auth/discord/callback
+   ```
+
+3. 同じ画面の **Client ID** をコピー、**Client Secret** は **Reset Secret** で発行してコピー
+
+> Bot を作る必要はありません。使うのは OAuth2 の `identify` と `email` スコープだけで、
+> サーバーへの参加やメッセージ権限は要求しません。
+
+#### サーバー側
+
+```bash
+ssh uslog-pkg-v2
+/opt/dwm/deploy/set-discord-auth.sh
+```
+
+Client ID / Client Secret / 初期管理者メールアドレスを対話で入力します。Secret は画面に表示されず、
+シェル履歴にも残りません。`.env` はタイムスタンプ付きでバックアップされてから更新され、
+最後にサービスが再起動されます。
+
+#### 確認
+
+```bash
+journalctl -u discord-webhook-manager -n 20 --no-pager | grep -i 'discord login'
+```
+
+`discord login enabled (redirect https://.../auth/discord/callback)` が出れば設定済みです。
+ブラウザで公開 URL を開き、「Discord でログイン」から入れることを確認してください。
+
+<br>
+
+**初期管理者について**: `BOOTSTRAP_ADMIN_EMAIL` は「管理者が0人のとき」だけ効きます。
+すでに誰か登録されている状態で書き換えても何も起きません。2人目以降は WebUI の
+「管理者」画面から追加してください。
+
+**締め出し対策**: 緊急用パスワードログインは既定で有効です。Discord ログインが確実に動くことを
+確認するまでは無効にしないでください。無効化した後に締め出された場合は §7 を参照してください。
+
 ## 2. 日常運用
 
 ### 状態確認
@@ -207,7 +256,10 @@ systemctl start discord-webhook-manager
 | サービスが起動しない | `journalctl -u discord-webhook-manager -n 50` | `APP_SECRET` が64桁の16進か、ポート 8080 が空いているかを確認 |
 | `failed to start: listen EADDRINUSE` | `ss -tlnp \| grep 8080` | 旧プロセスを停止するか `.env` の `PORT` を変更 |
 | 公開 URL に繋がらない | `curl http://127.0.0.1:8080/healthz` | ローカルで応答するなら Cloudflare の Public Hostname 設定側の問題 |
-| ログインできない | — | §7 のパスワードリセット |
+| ログインできない | — | §7 の復旧手順 |
+| Discord ログインで「クライアントIDまたはシークレットが正しくありません」 | `.env` の `DISCORD_*` | `set-discord-auth.sh` で再設定。Secret は Reset して取り直す |
+| Discord ログインで「Redirect URI が一致しません」 | 開発者ポータルの Redirects | `${PUBLIC_BASE_URL}/auth/discord/callback` を完全一致で登録 |
+| 「管理者として登録されていません」 | `journalctl` の `login denied for …` | そのアドレスを「管理者」画面で追加。Discord 側の確認済みアドレスか要確認 |
 | ログインしてもすぐ弾かれる | ブラウザの Cookie | HTTP で検証中なら `.env` の `COOKIE_SECURE=0`（本番は必ず `1`） |
 | 送信が `failed` HTTP 404 | ジョブ詳細のエラー欄 | Discord 側で Webhook が削除されています。URL を再発行して差し替え |
 | 送信が `failed` HTTP 401/403 | 同上 | Webhook のトークンが無効。URL を差し替え |
@@ -222,10 +274,38 @@ sudo -u dwm sqlite3 /var/lib/dwm/dwm.db \
   "SELECT public_id, status, target_label, scheduled_at, last_error FROM jobs ORDER BY id DESC LIMIT 20;"
 ```
 
-## 7. 管理パスワードのリセット
+## 7. ログインできなくなったときの復旧
 
-パスワードを忘れた場合、DB のハッシュを削除すると次回起動時に `.env` の `ADMIN_PASSWORD`（または
-自動生成値）で初期化されます。
+### 誰も管理者としてログインできない
+
+管理者を直接 DB に追加します（メールアドレスは小文字で）。
+
+```bash
+sudo -u dwm sqlite3 /var/lib/dwm/dwm.db \
+  "INSERT INTO admins (email, label, added_by, created_at)
+   VALUES ('someone@example.com', '復旧用', 'cli', datetime('now'));"
+```
+
+現在の登録状況の確認:
+
+```bash
+sudo -u dwm sqlite3 -header -column /var/lib/dwm/dwm.db \
+  "SELECT id, email, label, last_login_at FROM admins;"
+```
+
+### 緊急用パスワードログインを無効にしたまま締め出された
+
+```bash
+sudo -u dwm sqlite3 /var/lib/dwm/dwm.db \
+  "UPDATE settings SET value='1' WHERE key='password_login_enabled';"
+```
+
+反映は即時です（再起動不要）。
+
+### 緊急用パスワードを忘れた
+
+DB のハッシュを削除すると、次回起動時に `.env` の `ADMIN_PASSWORD`（または自動生成値）で
+初期化されます。
 
 ```bash
 systemctl stop discord-webhook-manager
@@ -235,7 +315,7 @@ systemctl start discord-webhook-manager
 journalctl -u discord-webhook-manager -n 20   # 自動生成の場合はここに1回だけ表示されます
 ```
 
-全セッションを強制ログアウトしたい場合:
+### 全セッションを強制ログアウト
 
 ```bash
 sudo -u dwm sqlite3 /var/lib/dwm/dwm.db "DELETE FROM sessions;"
@@ -247,7 +327,8 @@ sudo -u dwm sqlite3 /var/lib/dwm/dwm.db "DELETE FROM sessions;"
 |---|---|---|
 | サーバー root パスワード | パスワード管理ツール | この文書・リポジトリには記載しない |
 | `APP_SECRET` | `/opt/dwm/.env` + パスワード管理ツール | 失うと Webhook URL を復号できない |
-| 管理パスワード | パスワード管理ツール | 設定画面から変更可能 |
+| `DISCORD_CLIENT_SECRET` | `/opt/dwm/.env` + パスワード管理ツール | 漏れた場合は開発者ポータルで Reset Secret → `set-discord-auth.sh` で再設定 |
+| 緊急用パスワード | パスワード管理ツール | 設定画面から変更可能。Discord が使えないときの唯一の入口 |
 | API キー | 発行時に受け取った側で保管 | 再表示不可。紛失時は失効させて再発行 |
 | Discord Webhook URL | 本システム内（暗号化） | 平文は Discord の管理画面から再取得 |
 
@@ -255,7 +336,8 @@ sudo -u dwm sqlite3 /var/lib/dwm/dwm.db "DELETE FROM sessions;"
 
 ## 9. 定期的に見るとよいもの
 
-- **設定 → 操作ログ**: 誰がいつ何を変更したか
+- **管理者一覧**: 異動・退任した人が残っていないか。最終ログインが古い人は棚卸し
+- **設定 → 操作ログ**: 誰がいつ何を変更したか（`login.denied` が続いていれば設定ミスか不正試行）
 - **APIキー → 最終利用**: 使われていないキーは失効させる
 - **Webhook 一覧**: 使わなくなったものは無効化または削除
 - **送信履歴（失敗で絞り込み）**: 恒常的に失敗している宛先がないか

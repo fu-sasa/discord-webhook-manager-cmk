@@ -123,4 +123,28 @@ CREATE TABLE login_attempts (
 CREATE INDEX idx_login_ip_at ON login_attempts(ip, at DESC);
 `,
   },
+  {
+    id: 2,
+    name: 'discord_admins',
+    sql: `
+-- Allow-list of admins. Membership is keyed on the (verified) email address of
+-- the Discord account, so an admin can be authorised before they ever log in.
+CREATE TABLE admins (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  email               TEXT NOT NULL UNIQUE,
+  label               TEXT NOT NULL DEFAULT '',
+  discord_user_id     TEXT,
+  discord_username    TEXT,
+  discord_global_name TEXT,
+  avatar_url          TEXT,
+  added_by            TEXT NOT NULL DEFAULT '',
+  created_at          TEXT NOT NULL,
+  last_login_at       TEXT
+);
+
+-- Existing password sessions keep admin_id NULL and method 'password'.
+ALTER TABLE sessions ADD COLUMN admin_id INTEGER REFERENCES admins(id) ON DELETE CASCADE;
+ALTER TABLE sessions ADD COLUMN method TEXT NOT NULL DEFAULT 'password';
+`,
+  },
 ];

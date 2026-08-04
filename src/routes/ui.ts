@@ -5,16 +5,40 @@ import { formatLocal, utcIsoToWallTime, wallTimeToUtcIso } from '../lib/time.js'
 import { ValidationError, normalisePayload, type Payload } from '../lib/validate.js';
 import {
   LOCKOUT_MESSAGE,
+  OAUTH_STATE_COOKIE,
   SESSION_COOKIE,
   createSession,
   destroyAllSessions,
   destroySession,
   getSession,
   isLockedOut,
+  isPasswordLoginEnabled,
   recordLoginAttempt,
   setAdminPassword,
+  setPasswordLoginEnabled,
   verifyAdminPassword,
+  type SessionRow,
 } from '../services/auth.js';
+import {
+  addAdmin,
+  displayName,
+  getAdminByEmail,
+  getAdminById,
+  listAdmins,
+  recordLogin,
+  removeAdmin,
+  type AdminRow,
+} from '../services/admins.js';
+import {
+  OAuthError,
+  authorizeUrl,
+  exchangeCode,
+  fetchProfile,
+  revokeToken,
+} from '../services/discord-oauth.js';
+import { adminsPage } from '../views/admins.js';
+import { randomToken, safeEqual } from '../lib/crypto.js';
+import { runWithContext, setCurrentUser } from '../lib/request-context.js';
 import {
   createWebhook,
   deleteWebhook,
@@ -54,7 +78,19 @@ import { apiKeysPage } from '../views/apikeys.js';
 import { settingsPage, type AuditEntry } from '../views/settings.js';
 import { logger } from '../lib/logger.js';
 
-const ACTOR = 'admin';
+declare module 'fastify' {
+  interface FastifyRequest {
+    session?: SessionRow;
+    admin?: AdminRow;
+  }
+}
+
+/** Who to attribute an audit entry to. */
+function actorOf(req: FastifyRequest): string {
+  if (req.admin) return req.admin.email;
+  if (req.session) return 'emergency-password';
+  return 'system';
+}
 
 function sendHtml(reply: FastifyReply, body: string, status = 200) {
   return reply.code(status).type('text/html; charset=utf-8').send(body);
@@ -118,12 +154,30 @@ function payloadFromForm(body: unknown): Payload {
   return normalisePayload(draft);
 }
 
+const PUBLIC_PATHS = new Set(['/login', '/healthz', '/auth/discord', '/auth/discord/callback']);
+
 export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
+  // Establish the per-request identity context that `layout()` reads.
+  app.addHook('onRequest', (req, _reply, done) => {
+    runWithContext({ user: null }, done);
+  });
+
   // ---- authentication guard ------------------------------------------------
   app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {
     const path = req.url.split('?')[0] ?? '';
-    if (path === '/login' || path === '/healthz' || path.startsWith('/static/')) return undefined;
     const session = getSession(req.cookies[SESSION_COOKIE]);
+    if (session) {
+      req.session = session;
+      const admin = session.admin_id !== null ? getAdminById(session.admin_id) : undefined;
+      if (admin) req.admin = admin;
+      setCurrentUser({
+        name: admin ? displayName(admin) : '緊急ログイン',
+        avatarUrl: admin?.avatar_url ?? null,
+        emergency: !admin,
+      });
+    }
+
+    if (PUBLIC_PATHS.has(path) || path.startsWith('/static/')) return undefined;
     if (!session) {
       if (req.method !== 'GET') return reply.code(401).send('セッションが切れています。再ログインしてください。');
       return reply.redirect('/login', 303);
@@ -131,33 +185,160 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
     return undefined;
   });
 
-  // ---- login ---------------------------------------------------------------
-  app.get('/login', async (req, reply) => {
-    if (getSession(req.cookies[SESSION_COOKIE])) return reply.redirect('/', 303);
-    return sendHtml(reply, loginPage(flash(req).error));
-  });
-
-  app.post('/login', async (req, reply) => {
-    const ip = req.ip;
-    if (isLockedOut(ip)) {
-      return sendHtml(reply, loginPage(LOCKOUT_MESSAGE), 429);
-    }
-    const password = str(req.body, 'password');
-    if (!password || !verifyAdminPassword(password)) {
-      recordLoginAttempt(ip, false);
-      audit(ACTOR, 'login.failed', {}, ip);
-      return sendHtml(reply, loginPage('パスワードが違います。'), 401);
-    }
-    recordLoginAttempt(ip, true);
-    const session = createSession(ip, String(req.headers['user-agent'] ?? ''));
-    audit(ACTOR, 'login.success', {}, ip);
-    reply.setCookie(SESSION_COOKIE, session.id, {
+  const setSessionCookie = (reply: FastifyReply, id: string) => {
+    reply.setCookie(SESSION_COOKIE, id, {
       path: '/',
       httpOnly: true,
       sameSite: 'lax',
       secure: config.cookieSecure,
       maxAge: config.sessionTtlSeconds,
     });
+  };
+
+  const renderLogin = (req: FastifyRequest, reply: FastifyReply, error?: string | null, status = 200) => {
+    const f = flash(req);
+    return sendHtml(
+      reply,
+      loginPage({
+        error: error ?? f.error,
+        notice: f.notice,
+        discordEnabled: config.discordEnabled,
+        passwordEnabled: isPasswordLoginEnabled(),
+      }),
+      status,
+    );
+  };
+
+  // ---- login ---------------------------------------------------------------
+  app.get('/login', async (req, reply) => {
+    if (req.session) return reply.redirect('/', 303);
+    return renderLogin(req, reply);
+  });
+
+  // ---- Discord OAuth2 ------------------------------------------------------
+  app.get('/auth/discord', async (req, reply) => {
+    if (!config.discordEnabled) {
+      return renderLogin(req, reply, 'Discord ログインが設定されていません。', 503);
+    }
+    // The state is held in a cookie rather than server-side: it only needs to
+    // survive the round trip and prove the callback belongs to this browser.
+    const state = randomToken(24);
+    reply.setCookie(OAUTH_STATE_COOKIE, state, {
+      path: '/auth/discord',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: config.cookieSecure,
+      maxAge: 600,
+    });
+    return reply.redirect(authorizeUrl(state), 303);
+  });
+
+  app.get('/auth/discord/callback', async (req, reply) => {
+    const q = req.query as { code?: string; state?: string; error?: string; error_description?: string };
+    const expected = req.cookies[OAUTH_STATE_COOKIE];
+    reply.clearCookie(OAUTH_STATE_COOKIE, { path: '/auth/discord' });
+
+    if (q.error) {
+      const detail = q.error === 'access_denied' ? 'Discord 側で許可がキャンセルされました。' : q.error;
+      return renderLogin(req, reply, `ログインできませんでした: ${detail}`, 401);
+    }
+    if (!q.code || !q.state || !expected || !safeEqual(q.state, expected)) {
+      return renderLogin(
+        req,
+        reply,
+        'ログインの検証に失敗しました（リンクの有効期限切れの可能性があります）。もう一度お試しください。',
+        400,
+      );
+    }
+    if (isLockedOut(req.ip)) return renderLogin(req, reply, LOCKOUT_MESSAGE, 429);
+
+    let accessToken: string;
+    try {
+      accessToken = await exchangeCode(q.code);
+    } catch (err) {
+      const message = err instanceof OAuthError ? err.message : 'Discord の認証に失敗しました';
+      logger.error(`discord callback failed: ${(err as Error).message}`);
+      return renderLogin(req, reply, message, 502);
+    }
+
+    let profile;
+    try {
+      profile = await fetchProfile(accessToken);
+    } catch (err) {
+      return renderLogin(req, reply, (err as Error).message, 502);
+    } finally {
+      void revokeToken(accessToken);
+    }
+
+    if (!profile.email) {
+      audit('discord', 'login.denied', { reason: 'no_email', discord_id: profile.id }, req.ip);
+      return renderLogin(
+        req,
+        reply,
+        'Discord アカウントにメールアドレスが登録されていません。',
+        403,
+      );
+    }
+    // An unverified address can be set to anyone else's, so it must not grant access.
+    if (!profile.emailVerified) {
+      audit('discord', 'login.denied', { reason: 'email_unverified', email: profile.email }, req.ip);
+      return renderLogin(
+        req,
+        reply,
+        'Discord のメールアドレスが未確認です。Discord 側で確認を済ませてから再度お試しください。',
+        403,
+      );
+    }
+
+    const admin = getAdminByEmail(profile.email);
+    if (!admin) {
+      recordLoginAttempt(req.ip, false);
+      audit('discord', 'login.denied', { reason: 'not_admin', email: profile.email }, req.ip);
+      logger.warn(`login denied for ${profile.email} (not registered as an admin)`);
+      return renderLogin(
+        req,
+        reply,
+        `${profile.email} は管理者として登録されていません。既存の管理者に追加を依頼してください。`,
+        403,
+      );
+    }
+
+    recordLoginAttempt(req.ip, true);
+    recordLogin(admin.id, {
+      discordUserId: profile.id,
+      username: profile.username,
+      globalName: profile.globalName,
+      avatarUrl: profile.avatarUrl,
+    });
+    const session = createSession(req.ip, String(req.headers['user-agent'] ?? ''), {
+      adminId: admin.id,
+      method: 'discord',
+    });
+    audit(admin.email, 'login.success', { method: 'discord' }, req.ip);
+    logger.info(`admin logged in via discord: ${admin.email}`);
+    setSessionCookie(reply, session.id);
+    return reply.redirect('/', 303);
+  });
+
+  // ---- emergency password login -------------------------------------------
+  app.post('/login', async (req, reply) => {
+    if (!isPasswordLoginEnabled()) {
+      return renderLogin(req, reply, 'パスワードログインは無効化されています。', 403);
+    }
+    const ip = req.ip;
+    if (isLockedOut(ip)) return renderLogin(req, reply, LOCKOUT_MESSAGE, 429);
+
+    const password = str(req.body, 'password');
+    if (!password || !verifyAdminPassword(password)) {
+      recordLoginAttempt(ip, false);
+      audit('emergency-password', 'login.failed', {}, ip);
+      return renderLogin(req, reply, 'パスワードが違います。', 401);
+    }
+    recordLoginAttempt(ip, true);
+    const session = createSession(ip, String(req.headers['user-agent'] ?? ''), { method: 'password' });
+    audit('emergency-password', 'login.success', { method: 'password' }, ip);
+    logger.warn(`emergency password login from ${ip}`);
+    setSessionCookie(reply, session.id);
     return reply.redirect('/', 303);
   });
 
@@ -165,6 +346,66 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
     destroySession(req.cookies[SESSION_COOKIE]);
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
     return reply.redirect('/login', 303);
+  });
+
+  // ---- admin management ----------------------------------------------------
+  app.get('/admins', async (req, reply) => {
+    const f = flash(req);
+    return sendHtml(
+      reply,
+      adminsPage({
+        admins: listAdmins(),
+        currentAdminId: req.admin?.id ?? null,
+        discordEnabled: config.discordEnabled,
+        passwordLoginEnabled: isPasswordLoginEnabled(),
+        notice: f.notice,
+        error: f.error,
+      }),
+    );
+  });
+
+  app.post('/admins', async (req, reply) => {
+    try {
+      const admin = addAdmin(str(req.body, 'email'), str(req.body, 'label'), actorOf(req));
+      audit(actorOf(req), 'admin.add', { email: admin.email }, req.ip);
+      return flashRedirect(reply, '/admins', {
+        ok: `${admin.email} を管理者に追加しました。本人が Discord でログインできます。`,
+      });
+    } catch (err) {
+      return flashRedirect(reply, '/admins', { err: (err as Error).message });
+    }
+  });
+
+  app.post('/admins/:id/delete', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    try {
+      const removed = removeAdmin(id, req.admin?.id ?? null);
+      audit(actorOf(req), 'admin.remove', { email: removed.email }, req.ip);
+      return flashRedirect(reply, '/admins', {
+        ok: `${removed.email} を管理者から削除しました。ログイン中のセッションも無効になりました。`,
+      });
+    } catch (err) {
+      return flashRedirect(reply, '/admins', { err: (err as Error).message });
+    }
+  });
+
+  app.post('/admins/password-login', async (req, reply) => {
+    const enable = str(req.body, 'enabled') === '1';
+    if (!enable && !config.discordEnabled) {
+      return flashRedirect(reply, '/admins', {
+        err: 'Discord ログインが未設定のため、パスワードログインは無効にできません。',
+      });
+    }
+    if (!enable && listAdmins().length === 0) {
+      return flashRedirect(reply, '/admins', {
+        err: '管理者が1人も登録されていないため、パスワードログインは無効にできません。',
+      });
+    }
+    setPasswordLoginEnabled(enable);
+    audit(actorOf(req), 'settings.password_login', { enabled: enable }, req.ip);
+    return flashRedirect(reply, '/admins', {
+      ok: enable ? 'パスワードログインを有効にしました。' : 'パスワードログインを無効にしました。',
+    });
   });
 
   // ---- dashboard -----------------------------------------------------------
@@ -204,7 +445,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
         tags: str(req.body, 'tags'),
         note: str(req.body, 'note'),
       });
-      audit(ACTOR, 'webhook.create', { name: wh.name }, req.ip);
+      audit(actorOf(req), 'webhook.create', { name: wh.name }, req.ip);
       return flashRedirect(reply, '/webhooks', { ok: `webhook "${wh.name}" を登録しました。` });
     } catch (err) {
       return flashRedirect(reply, '/webhooks', { err: (err as Error).message });
@@ -232,7 +473,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
         note: str(req.body, 'note'),
         enabled: str(req.body, 'enabled') !== '0',
       });
-      audit(ACTOR, 'webhook.update', { name }, req.ip);
+      audit(actorOf(req), 'webhook.update', { name }, req.ip);
       return flashRedirect(reply, `/webhooks/${encodeURIComponent(name)}`, { ok: '保存しました。' });
     } catch (err) {
       return flashRedirect(reply, `/webhooks/${encodeURIComponent(name)}`, { err: (err as Error).message });
@@ -242,7 +483,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
   app.post('/webhooks/:name/delete', async (req, reply) => {
     const { name } = req.params as { name: string };
     deleteWebhook(name);
-    audit(ACTOR, 'webhook.delete', { name }, req.ip);
+    audit(actorOf(req), 'webhook.delete', { name }, req.ip);
     return flashRedirect(reply, '/webhooks', { ok: `webhook "${name}" を削除しました。` });
   });
 
@@ -264,7 +505,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
         },
       ],
     });
-    audit(ACTOR, 'webhook.test', { name, ok: result.ok, status: result.status }, req.ip);
+    audit(actorOf(req), 'webhook.test', { name, ok: result.ok, status: result.status }, req.ip);
     return result.ok
       ? flashRedirect(reply, '/webhooks', { ok: `"${name}" へのテスト送信に成功しました。` })
       : flashRedirect(reply, '/webhooks', { err: `テスト送信に失敗しました: ${result.error}` });
@@ -314,7 +555,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
         sendAt,
         source: 'ui',
       });
-      audit(ACTOR, 'message.create', { job: job.public_id, target: job.target_label }, req.ip);
+      audit(actorOf(req), 'message.create', { job: job.public_id, target: job.target_label }, req.ip);
       kick();
       return flashRedirect(reply, `/jobs/${job.public_id}`, {
         ok: sendAt
@@ -358,7 +599,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
   app.post('/jobs/:id/cancel', async (req, reply) => {
     const { id } = req.params as { id: string };
     const ok = cancelJob(id);
-    audit(ACTOR, 'message.cancel', { job: id, ok }, req.ip);
+    audit(actorOf(req), 'message.cancel', { job: id, ok }, req.ip);
     return flashRedirect(reply, `/jobs/${encodeURIComponent(id)}`, {
       ok: ok ? 'キャンセルしました。' : undefined,
       err: ok ? undefined : '待機中のジョブのみキャンセルできます。',
@@ -378,7 +619,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
       new Date().toISOString(),
       job.id,
     );
-    audit(ACTOR, 'message.retry', { job: id }, req.ip);
+    audit(actorOf(req), 'message.retry', { job: id }, req.ip);
     kick();
     return flashRedirect(reply, `/jobs/${encodeURIComponent(id)}`, { ok: '再送をキューに入れました。' });
   });
@@ -407,7 +648,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
         payload: payloadRaw ? (JSON.parse(payloadRaw) as unknown) : {},
         enabled: str(req.body, 'enabled') !== '0',
       });
-      audit(ACTOR, 'schedule.create', { id: sch.public_id, cron: sch.cron }, req.ip);
+      audit(actorOf(req), 'schedule.create', { id: sch.public_id, cron: sch.cron }, req.ip);
       return flashRedirect(reply, '/schedules', {
         ok: `定期実行を登録しました。次回は ${formatLocal(sch.next_run_at)} です。`,
       });
@@ -421,7 +662,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
     const current = getSchedule(id);
     if (!current) return flashRedirect(reply, '/schedules', { err: '見つかりませんでした。' });
     const updated = setScheduleEnabled(id, current.enabled !== 1);
-    audit(ACTOR, 'schedule.toggle', { id, enabled: updated?.enabled === 1 }, req.ip);
+    audit(actorOf(req), 'schedule.toggle', { id, enabled: updated?.enabled === 1 }, req.ip);
     return flashRedirect(reply, '/schedules', {
       ok: updated?.enabled === 1 ? '再開しました。' : '停止しました。',
     });
@@ -430,7 +671,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
   app.post('/schedules/:id/delete', async (req, reply) => {
     const { id } = req.params as { id: string };
     deleteSchedule(id);
-    audit(ACTOR, 'schedule.delete', { id }, req.ip);
+    audit(actorOf(req), 'schedule.delete', { id }, req.ip);
     return flashRedirect(reply, '/schedules', { ok: '削除しました。' });
   });
 
@@ -449,7 +690,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
       scopes,
       allowRawUrl: checked(req.body, 'allow_raw_url'),
     });
-    audit(ACTOR, 'apikey.create', { id: row.id, label, scopes }, req.ip);
+    audit(actorOf(req), 'apikey.create', { id: row.id, label, scopes }, req.ip);
     // Rendered directly rather than redirected: the token is shown exactly once.
     return sendHtml(reply, apiKeysPage({ keys: listApiKeys(), freshToken: token }));
   });
@@ -457,14 +698,14 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
   app.post('/apikeys/:id/revoke', async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     revokeApiKey(id);
-    audit(ACTOR, 'apikey.revoke', { id }, req.ip);
+    audit(actorOf(req), 'apikey.revoke', { id }, req.ip);
     return flashRedirect(reply, '/apikeys', { ok: 'API キーを失効させました。' });
   });
 
   app.post('/apikeys/:id/delete', async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     deleteApiKey(id);
-    audit(ACTOR, 'apikey.delete', { id }, req.ip);
+    audit(actorOf(req), 'apikey.delete', { id }, req.ip);
     return flashRedirect(reply, '/apikeys', { ok: 'API キーの記録を削除しました。' });
   });
 
@@ -489,7 +730,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
       return flashRedirect(reply, '/settings', { err: 'その webhook は存在しません。' });
     }
     setSetting(ALERT_SETTING_KEY, name);
-    audit(ACTOR, 'settings.alert', { name }, req.ip);
+    audit(actorOf(req), 'settings.alert', { name }, req.ip);
     return flashRedirect(reply, '/settings', {
       ok: name ? `失敗アラートの通知先を "${name}" にしました。` : '失敗アラートを無効にしました。',
     });
@@ -512,7 +753,7 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
     }
     destroyAllSessions();
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
-    audit(ACTOR, 'settings.password', {}, req.ip);
+    audit(actorOf(req), 'settings.password', {}, req.ip);
     return flashRedirect(reply, '/login', { err: 'パスワードを変更しました。新しいパスワードでログインしてください。' });
   });
 }

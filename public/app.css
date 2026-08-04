@@ -45,19 +45,27 @@ code { background: var(--bg-soft); padding: .1em .35em; border-radius: 4px; font
 
 /* ---- layout ---- */
 .nav {
-  display: flex; align-items: center; gap: 1.2rem; flex-wrap: wrap;
-  padding: .7rem 1.2rem; background: var(--card); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: .9rem; flex-wrap: wrap;
+  padding: .7rem 1.1rem; background: var(--card); border-bottom: 1px solid var(--line);
 }
 .brand { font-weight: 700; text-decoration: none; color: var(--fg); white-space: nowrap; }
 .brand span { color: var(--fg-dim); font-weight: 400; font-size: .8em; margin-left: .3em; }
-.nav-links { display: flex; gap: .3rem; flex-wrap: wrap; flex: 1; }
+.nav-links { display: flex; gap: .15rem; flex-wrap: wrap; flex: 1; }
 .nav-links a {
-  padding: .35rem .7rem; border-radius: 999px; text-decoration: none;
-  color: var(--fg-dim); font-size: .92rem;
+  padding: .35rem .6rem; border-radius: 999px; text-decoration: none;
+  color: var(--fg-dim); font-size: .89rem; white-space: nowrap;
 }
 .nav-links a:hover { background: var(--bg-soft); color: var(--fg); }
 .nav-links a.active { background: var(--accent); color: var(--accent-fg); }
 .nav-logout { margin: 0; }
+
+/* Below this width the eight nav items get squeezed into one item per line, so
+   give them their own full-width row underneath the brand. */
+@media (max-width: 1100px) {
+  .nav { gap: .6rem 1rem; }
+  .nav-links { order: 3; flex-basis: 100%; }
+  .brand { flex: 1; }
+}
 
 .container { max-width: 1180px; margin: 0 auto; padding: 1.4rem 1.2rem 4rem; }
 section { margin-bottom: 1.6rem; }
@@ -166,11 +174,32 @@ pre.code {
 pre.token { font-size: .95rem; font-weight: 700; color: var(--ok); }
 .token-card { border-color: var(--ok); }
 
+/* ---- identity ---- */
+.nav-user { display: flex; align-items: center; gap: .45rem; font-size: .88rem; color: var(--fg-dim); }
+.nav-user-name { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar { border-radius: 50%; display: inline-block; vertical-align: middle; object-fit: cover; }
+.avatar-blank { width: 26px; height: 26px; background: var(--line); }
+td .avatar-blank { width: 28px; height: 28px; }
+.tag-warn { background: color-mix(in srgb, var(--warn) 22%, transparent); border-color: transparent; color: #d9c44a; }
+
 /* ---- login ---- */
 body.bare { display: grid; place-items: center; min-height: 100vh; }
-.login-wrap { width: min(380px, 92vw); }
+.login-wrap { width: min(400px, 92vw); }
 .login-card h1 { font-size: 1.15rem; margin-bottom: .2rem; }
 .login-card h1 span { display: block; font-size: .8rem; color: var(--fg-dim); font-weight: 400; }
+
+.btn-discord {
+  background: #5865f2; border-color: #5865f2; color: #fff; font-weight: 600;
+  display: flex; align-items: center; justify-content: center; gap: .5rem;
+  padding: .7rem 1rem; font-size: .98rem;
+}
+.btn-discord:hover { background: #4752c4; border-color: #4752c4; }
+.btn-discord svg { flex: none; }
+
+.emergency { margin-top: 1.4rem; border-top: 1px solid var(--line); padding-top: .8rem; }
+.emergency summary { cursor: pointer; color: var(--fg-dim); font-size: .85rem; }
+.emergency summary:hover { color: var(--fg); }
+.emergency form { margin-top: .6rem; }
 
 /* ---- compose ---- */
 .compose { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 1.2rem; align-items: start; }

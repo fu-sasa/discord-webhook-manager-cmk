@@ -5,7 +5,9 @@ import { isoPlusSeconds, nowIso } from '../lib/time.js';
 import { logger } from '../lib/logger.js';
 
 const PASSWORD_KEY = 'admin_password_hash';
+const PASSWORD_LOGIN_KEY = 'password_login_enabled';
 export const SESSION_COOKIE = 'dwm_session';
+export const OAUTH_STATE_COOKIE = 'dwm_oauth_state';
 
 const LOCKOUT_WINDOW_MINUTES = 15;
 const LOCKOUT_THRESHOLD = 10;
@@ -48,7 +50,22 @@ export function bootstrapAdminPassword(): void {
   logger.warn('='.repeat(72));
 }
 
+/**
+ * The emergency password path. Discord is the intended way in, but if the OAuth
+ * app is misconfigured or Discord is unreachable this is the only route back
+ * into a remote box short of a shell. Disable it once Discord login is proven.
+ */
+export function isPasswordLoginEnabled(): boolean {
+  return getSetting(PASSWORD_LOGIN_KEY) !== '0';
+}
+
+export function setPasswordLoginEnabled(enabled: boolean): void {
+  setSetting(PASSWORD_LOGIN_KEY, enabled ? '1' : '0');
+}
+
 // ---- sessions ---------------------------------------------------------------
+
+export type LoginMethod = 'discord' | 'password';
 
 export interface SessionRow {
   id: string;
@@ -56,21 +73,31 @@ export interface SessionRow {
   expires_at: string;
   ip: string;
   ua: string;
+  admin_id: number | null;
+  method: LoginMethod;
 }
 
-export function createSession(ip: string, ua: string): SessionRow {
+export function createSession(
+  ip: string,
+  ua: string,
+  opts: { adminId?: number | null; method?: LoginMethod } = {},
+): SessionRow {
   const id = randomToken(32);
   const created = nowIso();
   const expires = isoPlusSeconds(config.sessionTtlSeconds);
+  const adminId = opts.adminId ?? null;
+  const method = opts.method ?? 'password';
   run(
-    'INSERT INTO sessions (id, created_at, expires_at, ip, ua) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO sessions (id, created_at, expires_at, ip, ua, admin_id, method) VALUES (?, ?, ?, ?, ?, ?, ?)',
     id,
     created,
     expires,
     ip,
     ua.slice(0, 300),
+    adminId,
+    method,
   );
-  return { id, created_at: created, expires_at: expires, ip, ua };
+  return { id, created_at: created, expires_at: expires, ip, ua, admin_id: adminId, method };
 }
 
 export function getSession(id: string | undefined): SessionRow | undefined {

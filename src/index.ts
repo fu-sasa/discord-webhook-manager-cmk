@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { closeDb, initDb } from './db/index.js';
 import { logger } from './lib/logger.js';
 import { bootstrapAdminPassword } from './services/auth.js';
+import { bootstrapAdmin } from './services/admins.js';
 import { countJobs } from './services/jobs.js';
 import { registerApiRoutes } from './routes/api.js';
 import { registerUiRoutes } from './routes/ui.js';
@@ -14,6 +15,12 @@ import { startScheduler, stopScheduler } from './scheduler/worker.js';
 async function main(): Promise<void> {
   initDb();
   bootstrapAdminPassword();
+  bootstrapAdmin();
+  logger.info(
+    config.discordEnabled
+      ? `discord login enabled (redirect ${config.publicBaseUrl}/auth/discord/callback)`
+      : 'discord login DISABLED — set DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET to enable it',
+  );
 
   const app = Fastify({
     logger: false,

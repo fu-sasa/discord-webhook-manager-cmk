@@ -1,3 +1,5 @@
+import { currentUser } from './request-context.js';
+
 /**
  * Tiny escaping-by-default template helper. Interpolated values are HTML-escaped
  * unless explicitly wrapped in `raw()`, so forgetting to escape is not possible
@@ -48,6 +50,7 @@ export type NavKey =
   | 'jobs'
   | 'schedules'
   | 'apikeys'
+  | 'admins'
   | 'settings'
   | 'none';
 
@@ -58,8 +61,16 @@ const NAV: { key: NavKey; href: string; label: string }[] = [
   { key: 'jobs', href: '/jobs', label: '送信履歴' },
   { key: 'schedules', href: '/schedules', label: '定期実行' },
   { key: 'apikeys', href: '/apikeys', label: 'APIキー' },
+  { key: 'admins', href: '/admins', label: '管理者' },
   { key: 'settings', href: '/settings', label: '設定' },
 ];
+
+export interface CurrentUser {
+  name: string;
+  avatarUrl?: string | null;
+  /** Shown when the session came from the emergency password rather than Discord. */
+  emergency?: boolean;
+}
 
 export interface LayoutOptions {
   title: string;
@@ -70,10 +81,13 @@ export interface LayoutOptions {
   error?: string | null;
   scripts?: string[];
   chrome?: boolean;
+  user?: CurrentUser | null;
 }
 
 export function layout(opts: LayoutOptions): string {
   const { title, active = 'none', body, notice, error, scripts = [], chrome = true } = opts;
+  // Pages don't thread the identity through; it comes from the request context.
+  const user = opts.user !== undefined ? opts.user : currentUser();
   const nav = chrome
     ? html`<nav class="nav">
         <a class="brand" href="/">Discord Webhook Manager <span>for CMK</span></a>
@@ -85,6 +99,15 @@ export function layout(opts: LayoutOptions): string {
               >`,
           )}
         </div>
+        ${user
+          ? html`<div class="nav-user" title="${user.emergency ? '緊急用パスワードでログイン中' : user.name}">
+              ${user.avatarUrl
+                ? html`<img class="avatar" src="${user.avatarUrl}" alt="" width="26" height="26" />`
+                : html`<span class="avatar avatar-blank"></span>`}
+              <span class="nav-user-name">${user.name}</span>
+              ${user.emergency ? html`<span class="tag tag-warn">緊急</span>` : raw('')}
+            </div>`
+          : raw('')}
         <form method="post" action="/logout" class="nav-logout">
           <button type="submit" class="btn btn-ghost">ログアウト</button>
         </form>

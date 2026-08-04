@@ -89,10 +89,25 @@ SQLite。マイグレーションは `src/db/schema.ts` に追記式で定義し
 
 cron 式・タイムゾーン・ペイロードを保持し、`next_run_at` が到来するとジョブを1件生成します。
 
+### admins — 管理者の許可リスト
+
+WebUI にログインできる人を、**Discord アカウントの確認済みメールアドレス**で管理します。
+
+| カラム | 説明 |
+|---|---|
+| `email` | 照合キー。小文字に正規化して保存（UNIQUE） |
+| `label` | メモ（担当など） |
+| `discord_user_id` / `discord_username` / `discord_global_name` / `avatar_url` | 初回ログイン時に記録される Discord プロフィール |
+| `added_by` | 追加した人のメールアドレス |
+| `created_at` / `last_login_at` | |
+
+本人がまだ一度もログインしていなくても登録できます（メールアドレスだけで先に許可できる）。
+削除すると `sessions` が ON DELETE CASCADE で消えるため、**ログイン中でも即座に締め出されます**。
+
 ### その他
 
 - `api_keys` — ラベル、SHA-256 ハッシュ、スコープ、URL 直接指定の可否
-- `sessions` — サーバー側セッション（失効可能）
+- `sessions` — サーバー側セッション（失効可能）。`admin_id` と `method`（`discord` / `password`）を保持
 - `audit_log` — 全ての変更操作
 - `login_attempts` — IP 単位のロックアウト判定用
 - `settings` — 管理パスワードハッシュ、アラート通知先
@@ -241,9 +256,40 @@ Webhook URL の直接指定は、次の正規表現に一致するものだけ�
 
 ## 6. セキュリティ設計
 
+### 認証フロー（Discord OAuth2）
+
+```
+/login  ──▶ /auth/discord ──▶ discord.com/oauth2/authorize (scope: identify email)
+                                        │
+                       ユーザーが許可 ──┘
+                                        ▼
+        /auth/discord/callback?code=…&state=…
+                │ 1. state をクッキーの値と定数時間比較（CSRF 対策）
+                │ 2. code をアクセストークンに交換
+                │ 3. /users/@me でプロフィール取得 → トークンは即 revoke
+                │ 4. email が verified であることを確認
+                │ 5. admins テーブルに存在するか照合
+                ▼
+        セッション発行（admin_id, method='discord'）
+```
+
+いずれかに失敗した場合はログイン画面にエラーを表示し、`audit_log` に `login.denied` を
+理由付きで記録します（`no_email` / `email_unverified` / `not_admin`）。
+
+**未確認メールを拒否する理由**: Discord の未確認アドレスは他人のアドレスを設定できるため、
+確認済みでないアドレスを信頼すると管理者になりすませます。
+
+**緊急用パスワードログイン**: Discord アプリの設定ミスや Discord 障害時に締め出されないための
+予備手段です。既定で有効、管理者画面から無効化できます。無効化した状態で締め出された場合は
+サーバー上で `settings` テーブルの `password_login_enabled` を `1` に戻します。
+
 | 項目 | 実装 |
 |---|---|
-| 管理者認証 | パスワード1つ。scrypt (N=16384, r=8, p=1) でハッシュ化して保存 |
+| 管理者認証 | Discord OAuth2。許可リスト（`admins.email`）と確認済みメールで照合 |
+| 緊急時の認証 | パスワード1つ。scrypt (N=16384, r=8, p=1) でハッシュ化して保存。無効化可能 |
+| OAuth CSRF | ランダム state を httpOnly クッキーに保持し、コールバックで `timingSafeEqual` 比較 |
+| アクセストークン | プロフィール取得後すぐ revoke。保存しない |
+| 権限の剥奪 | 管理者削除でセッションが CASCADE 削除され、即時ログアウト |
 | セッション | サーバー側で発行・失効可能。httpOnly / SameSite=Lax / Secure クッキー、既定7日 |
 | 総当たり対策 | IP 単位で15分に10回失敗するとロックアウト |
 | CSRF | SameSite=Lax により他サイトからの POST でクッキーが送られない |
@@ -266,7 +312,10 @@ Webhook URL の直接指定は、次の正規表現に一致するものだけ�
 | 変数 | 既定 | 説明 |
 |---|---|---|
 | `APP_SECRET` | （必須） | 32バイトの16進。暗号鍵とクッキー署名の元 |
-| `ADMIN_PASSWORD` | — | 初回起動時のみ使用。未設定なら自動生成しログに1回出力 |
+| `DISCORD_CLIENT_ID` | — | Discord アプリのクライアントID。未設定だと Discord ログインは無効 |
+| `DISCORD_CLIENT_SECRET` | — | 同シークレット |
+| `BOOTSTRAP_ADMIN_EMAIL` | — | 管理者が0人のときだけ、初回起動で1人目として登録される |
+| `ADMIN_PASSWORD` | — | 緊急用パスワード。初回起動時のみ使用。未設定なら自動生成しログに1回出力 |
 | `HOST` / `PORT` | `127.0.0.1` / `8080` | 待ち受け |
 | `PUBLIC_BASE_URL` | — | アラート通知内のリンクに使用 |
 | `DATABASE_PATH` | `./data/dwm.db` | SQLite ファイル |
