@@ -132,5 +132,6 @@ echo
 echo " 残りの手動作業: Cloudflare Zero Trust ダッシュボードで、このホストの"
 echo " 既存トンネルに Public Hostname を追加してください。"
 echo "     Subdomain/Domain : $(echo "$PUBLIC_URL" | sed 's|https\?://||')"
-echo "     Service          : HTTP  →  localhost:${BIND_PORT}"
+echo "     Service          : HTTP  →  127.0.0.1:${BIND_PORT}"
+echo "     （URL 欄はホスト名とポートの両方が必要。ポートだけだと 502 になります）"
 echo "────────────────────────────────────────────────────────────────────"

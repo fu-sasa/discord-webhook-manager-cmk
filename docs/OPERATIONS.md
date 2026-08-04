@@ -65,7 +65,12 @@ git clone https://github.com/fu-sasa/discord-webhook-manager-cmk.git /opt/dwm
    | Subdomain | `webhook-manager-cmk` |
    | Domain | `uslog.tech` |
    | Type | `HTTP` |
-   | URL | `localhost:8080` |
+   | URL | `127.0.0.1:8080` |
+
+> **URL 欄はホストとポートの両方**を入れてください。`8080` だけだと cloudflared は
+> それをホスト名とみなし、`dial tcp: lookup 8080: no such host` で **502** になります。
+> `localhost:8080` でも動きますが、このホストは `::1` で待ち受けていないため IPv6 を試して
+> 失敗してから IPv4 に落ちます。`127.0.0.1:8080` が確実です。
 
 #### 手順 B — サーバー側（2本目のコネクタを追加）
 
@@ -92,7 +97,14 @@ curl -s https://webhook-manager-cmk.uslog.tech/healthz
 
 > **切り分け**: `healthz` が返らないときは、まずサーバー上で
 > `curl -s http://127.0.0.1:8080/healthz` を試します。ローカルで応答するならアプリは正常で、
-> 原因は Cloudflare 側（Public Hostname の未設定、または別アカウントのトンネルに設定した）です。
+> 原因は Cloudflare 側（Public Hostname の未設定、URL 欄の書式誤り、別アカウントのトンネルに設定した）です。
+>
+> コネクタが実際に受け取っている設定は次で確認できます。`service` が
+> `http://127.0.0.1:8080` になっているかを見てください。
+>
+> ```bash
+> journalctl -u cloudflared-uslog | grep 'Updated to new configuration' | tail -1
+> ```
 
 > **推奨**: 同じ画面で **Access → Applications** にこのホスト名を登録し、メール認証などで
 > アプリ全体を保護すると二重防御になります。その場合、API を使う外部システム向けには

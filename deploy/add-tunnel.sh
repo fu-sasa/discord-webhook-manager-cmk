@@ -98,5 +98,11 @@ echo " Public Hostname を追加してください。"
 echo "     Subdomain : webhook-manager-cmk"
 echo "     Domain    : uslog.tech"
 echo "     Type      : HTTP"
-echo "     URL       : localhost:8080"
+echo "     URL       : 127.0.0.1:8080     <-- ホスト名とポートの両方が必要"
+echo
+echo " URL 欄に \"8080\" だけを入れると cloudflared がそれをホスト名として"
+echo " 解決しようとし、502 (lookup 8080: no such host) になります。"
+echo
+echo " 設定後、コネクタが受け取った内容は次で確認できます:"
+echo "     journalctl -u ${UNIT} | grep 'Updated to new configuration' | tail -1"
 echo "────────────────────────────────────────────────────────────────────"
