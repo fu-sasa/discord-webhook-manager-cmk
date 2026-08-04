@@ -138,9 +138,17 @@ ssh uslog-pkg-v2
 /opt/dwm/deploy/set-discord-auth.sh
 ```
 
-Client ID / Client Secret / 初期管理者メールアドレスを対話で入力します。Secret は画面に表示されず、
-シェル履歴にも残りません。`.env` はタイムスタンプ付きでバックアップされてから更新され、
-最後にサービスが再起動されます。
+Client ID / Client Secret / 初期管理者メールアドレスを対話で入力します。
+
+**入力した値はそのまま画面に表示されます。** 貼り付けミス（先頭や末尾の欠落、ターミナルの
+ブラケットペースト制御文字の混入）が `invalid_client` の主因で、隠したままだと気づけないためです。
+保存前に確認プロンプトが出るので、Discord の画面と1文字ずつ見比べてください。
+
+スクリプトは制御文字や前後の空白・引用符を自動で除去し、32文字でない場合や使用できない文字が
+ある場合に警告します。`.env` はタイムスタンプ付きでバックアップされてから更新され、書き込み後に
+読み返して一致を検証し、最後にサービスが再起動されます。
+
+> シェル履歴には残りません（`read` で受け取るため）。画面共有中の実行は避けてください。
 
 #### 確認
 
@@ -257,7 +265,7 @@ systemctl start discord-webhook-manager
 | `failed to start: listen EADDRINUSE` | `ss -tlnp \| grep 8080` | 旧プロセスを停止するか `.env` の `PORT` を変更 |
 | 公開 URL に繋がらない | `curl http://127.0.0.1:8080/healthz` | ローカルで応答するなら Cloudflare の Public Hostname 設定側の問題 |
 | ログインできない | — | §7 の復旧手順 |
-| Discord ログインで「クライアントIDまたはシークレットが正しくありません」 | `.env` の `DISCORD_*` | `set-discord-auth.sh` で再設定。Secret は Reset して取り直す |
+| Discord ログインで「クライアントIDまたはシークレットが正しくありません」 | エラー文中の文字数表示 | **32文字でなければ貼り付けミス**です。`set-discord-auth.sh` を再実行し、表示される値を Discord の画面と見比べてください。32文字なのに失敗する場合は Reset Secret で取り直します |
 | Discord ログインで「Redirect URI が一致しません」 | 開発者ポータルの Redirects | `${PUBLIC_BASE_URL}/auth/discord/callback` を完全一致で登録 |
 | 「管理者として登録されていません」 | `journalctl` の `login denied for …` | そのアドレスを「管理者」画面で追加。Discord 側の確認済みアドレスか要確認 |
 | ログインしてもすぐ弾かれる | ブラウザの Cookie | HTTP で検証中なら `.env` の `COOKIE_SECURE=0`（本番は必ず `1`） |
