@@ -16,11 +16,27 @@ async function main(): Promise<void> {
   initDb();
   bootstrapAdminPassword();
   bootstrapAdmin();
-  logger.info(
-    config.discordEnabled
-      ? `discord login enabled (redirect ${config.publicBaseUrl}/auth/discord/callback)`
-      : 'discord login DISABLED — set DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET to enable it',
-  );
+  if (config.discordEnabled) {
+    logger.info(`discord login enabled (redirect ${config.publicBaseUrl}/auth/discord/callback)`);
+    // A mis-pasted secret only surfaces as `invalid_client` at login time, which
+    // is far from the cause. Flag the obvious shape problems at boot instead.
+    const secret = config.discordClientSecret;
+    if (!/^[A-Za-z0-9_-]+$/.test(secret)) {
+      logger.warn(
+        'DISCORD_CLIENT_SECRET contains unexpected characters — re-run deploy/set-discord-auth.sh',
+      );
+    } else if (secret.length !== 32) {
+      logger.warn(
+        `DISCORD_CLIENT_SECRET is ${secret.length} characters; Discord secrets are normally 32. ` +
+          'If login fails with invalid_client, re-run deploy/set-discord-auth.sh',
+      );
+    }
+    if (!/^\d{17,20}$/.test(config.discordClientId)) {
+      logger.warn(`DISCORD_CLIENT_ID "${config.discordClientId}" does not look like a Discord snowflake`);
+    }
+  } else {
+    logger.info('discord login DISABLED — set DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET to enable it');
+  }
 
   const app = Fastify({
     logger: false,

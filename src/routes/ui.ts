@@ -258,14 +258,17 @@ export async function registerUiRoutes(app: FastifyInstance): Promise<void> {
     } catch (err) {
       const message = err instanceof OAuthError ? err.message : 'Discord の認証に失敗しました';
       logger.error(`discord callback failed: ${(err as Error).message}`);
-      return renderLogin(req, reply, message, 502);
+      // Deliberately 200, not 5xx: Cloudflare replaces origin 5xx bodies with
+      // its own "error code 502" page, which would hide this explanation.
+      return renderLogin(req, reply, message);
     }
 
     let profile;
     try {
       profile = await fetchProfile(accessToken);
     } catch (err) {
-      return renderLogin(req, reply, (err as Error).message, 502);
+      logger.error(`discord profile fetch failed: ${(err as Error).message}`);
+      return renderLogin(req, reply, (err as Error).message);
     } finally {
       void revokeToken(accessToken);
     }

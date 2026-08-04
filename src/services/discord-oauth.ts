@@ -65,8 +65,15 @@ export async function exchangeCode(code: string): Promise<string> {
     // The body can name the exact misconfiguration (bad secret, redirect mismatch).
     logger.error(`discord token exchange failed: HTTP ${res.status} ${text.slice(0, 300)}`);
     if (text.includes('invalid_client')) {
+      // Almost always a mis-pasted secret, so say what to check.
+      const len = config.discordClientSecret.length;
+      const hint =
+        len === 32
+          ? 'Discord 側で Reset Secret を行い、新しい値で設定し直してください。'
+          : `現在保存されているシークレットは ${len} 文字です（正しくは 32 文字）。貼り付け時に文字が欠けたか余分に混入しています。`;
       throw new OAuthError(
-        'Discord アプリのクライアントIDまたはシークレットが正しくありません（.env を確認してください）',
+        `Discord アプリのクライアントIDまたはシークレットが正しくありません。${hint}` +
+          '（サーバーで deploy/set-discord-auth.sh を再実行してください）',
       );
     }
     if (text.includes('redirect_uri')) {
