@@ -12,10 +12,10 @@ Discord へ直接 Webhook を叩く代わりに、このサーバーの REST API
 送信履歴が残る / 誤爆メンションが既定で抑止される。
 
 ```
-あなたのコード ──HTTPS──▶ https://dwm-pkg-v2.tesatech.net/api/v1 ──▶ Discord
+あなたのコード ──HTTPS──▶ https://webhook-manager-cmk.uslog.tech/api/v1 ──▶ Discord
 ```
 
-- **ベース URL**: `https://dwm-pkg-v2.tesatech.net/api/v1`
+- **ベース URL**: `https://webhook-manager-cmk.uslog.tech/api/v1`
 - **認証**: `Authorization: Bearer dwm_xxxxxxxx`（管理者から受け取ってください）
 - **Content-Type**: `application/json`
 - **レート制限**: APIキーあたり 120 リクエスト/分（超過は 429）
@@ -28,7 +28,7 @@ Discord へ直接 Webhook を叩く代わりに、このサーバーの REST API
 ## 最短の例
 
 ```bash
-curl -X POST https://dwm-pkg-v2.tesatech.net/api/v1/messages \
+curl -X POST https://webhook-manager-cmk.uslog.tech/api/v1/messages \
   -H "Authorization: Bearer $DWM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"webhook":"cmk-announce","payload":{"content":"ビルドが完了しました"}}'
@@ -142,7 +142,7 @@ curl -X POST https://dwm-pkg-v2.tesatech.net/api/v1/messages \
 ### named webhook の登録（manage スコープ）
 
 ```bash
-curl -X POST https://dwm-pkg-v2.tesatech.net/api/v1/webhooks \
+curl -X POST https://webhook-manager-cmk.uslog.tech/api/v1/webhooks \
   -H "Authorization: Bearer $DWM_API_KEY" -H "Content-Type: application/json" \
   -d '{"name":"my-service","label":"連携サービス通知","url":"https://discord.com/api/webhooks/…","tags":"bot"}'
 ```
@@ -199,7 +199,7 @@ POST /api/v1/schedules
 ### TypeScript / JavaScript
 
 ```ts
-const BASE = 'https://dwm-pkg-v2.tesatech.net/api/v1';
+const BASE = 'https://webhook-manager-cmk.uslog.tech/api/v1';
 
 interface SendOptions {
   webhook: string;
@@ -256,7 +256,7 @@ await sendDiscord({
 import os
 import requests
 
-BASE = "https://dwm-pkg-v2.tesatech.net/api/v1"
+BASE = "https://webhook-manager-cmk.uslog.tech/api/v1"
 HEADERS = {
     "Authorization": f"Bearer {os.environ['DWM_API_KEY']}",
     "Content-Type": "application/json",
@@ -300,7 +300,7 @@ send_discord(
 
 ```bash
 send_discord() {
-  curl -sS -X POST "https://dwm-pkg-v2.tesatech.net/api/v1/messages" \
+  curl -sS -X POST "https://webhook-manager-cmk.uslog.tech/api/v1/messages" \
     -H "Authorization: Bearer $DWM_API_KEY" \
     -H "Content-Type: application/json" \
     -d "$(jq -n --arg w "$1" --arg c "$2" --arg k "$3" \
@@ -316,13 +316,13 @@ send_discord "cmk-announce" "デプロイが完了しました ($GITHUB_SHA)" "d
 
 ```bash
 # 1. キーが有効か
-curl -H "Authorization: Bearer $DWM_API_KEY" https://dwm-pkg-v2.tesatech.net/api/v1/me
+curl -H "Authorization: Bearer $DWM_API_KEY" https://webhook-manager-cmk.uslog.tech/api/v1/me
 
 # 2. 送信できる宛先を確認
-curl -H "Authorization: Bearer $DWM_API_KEY" https://dwm-pkg-v2.tesatech.net/api/v1/webhooks
+curl -H "Authorization: Bearer $DWM_API_KEY" https://webhook-manager-cmk.uslog.tech/api/v1/webhooks
 
 # 3. 実際に届くところまで同期で確認
-curl -X POST https://dwm-pkg-v2.tesatech.net/api/v1/messages \
+curl -X POST https://webhook-manager-cmk.uslog.tech/api/v1/messages \
   -H "Authorization: Bearer $DWM_API_KEY" -H "Content-Type: application/json" \
   -d '{"webhook":"<上で得た name>","wait":true,"payload":{"content":"疎通テスト"}}'
 # -> {"status":"sent", "discord_message_id":"...", "response_status":200}

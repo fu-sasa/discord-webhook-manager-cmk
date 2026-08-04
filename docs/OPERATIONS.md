@@ -9,7 +9,7 @@
 | ホスト | `uslog-pkg-v2`（Ubuntu 26.04 LXC / 4GB RAM） |
 | 接続 | `ssh uslog-pkg-v2`（`~/.ssh/config` で cloudflared 経由に設定済み） |
 | 認証情報 | root パスワードはパスワード管理ツールを参照（この文書には記載しません） |
-| 公開 URL | `https://dwm-pkg-v2.tesatech.net` |
+| 公開 URL | `https://webhook-manager-cmk.uslog.tech` |
 | アプリ | `/opt/dwm`（root 所有・読み取り専用運用） |
 | データ | `/var/lib/dwm/dwm.db`（`dwm` ユーザー所有） |
 | バックアップ | `/var/backups/dwm/dwm-YYYYMMDD-HHMMSS.db.gz`（14日保持） |
@@ -48,12 +48,18 @@ git clone https://github.com/fu-sasa/discord-webhook-manager-cmk.git /opt/dwm
 
    | 項目 | 値 |
    |---|---|
-   | Subdomain | `dwm-pkg-v2` |
-   | Domain | `tesatech.net` |
+   | Subdomain | `webhook-manager-cmk` |
+   | Domain | `uslog.tech` |
    | Type | `HTTP` |
    | URL | `localhost:8080` |
 
-4. 数十秒後 `https://dwm-pkg-v2.tesatech.net/healthz` が JSON を返せば完了です
+4. 数十秒後 `https://webhook-manager-cmk.uslog.tech/healthz` が JSON を返せば完了です
+
+> **前提**: Domain のプルダウンに `uslog.tech` が出てこない場合、そのゾーンがこのトンネルとは
+> 別の Cloudflare アカウントにあります。トンネルは自分と同じアカウントのゾーンにしかルートを
+> 作れません。その場合は、`uslog.tech` を持つアカウント側で新しいトンネルを作成し、
+> `/etc/cloudflared/token` を差し替えて `systemctl restart cloudflared` してください
+> （SSH も同じトンネルを通っているため、切り替え前に別の接続経路を確保しておくこと）。
 
 > **推奨**: 同じ画面で **Access → Applications** にこのホスト名を登録し、メール認証などで
 > アプリ全体を保護すると二重防御になります。その場合、API を使う外部システム向けには
@@ -146,7 +152,7 @@ systemctl start discord-webhook-manager
 
 - **失敗アラート**: WebUI の「設定」で通知先の named webhook を指定してください。未設定だと
   ダッシュボードに警告が出ます
-- **外形監視**: `https://dwm-pkg-v2.tesatech.net/healthz` を Uptime 監視に登録
+- **外形監視**: `https://webhook-manager-cmk.uslog.tech/healthz` を Uptime 監視に登録
 - **キュー滞留**: `healthz` の `queued` が想定より大きい状態が続く場合はスケジューラの停止を疑います
 
 ## 6. トラブルシュート

@@ -164,7 +164,7 @@ Webhook URL の直接指定は、次の正規表現に一致するものだけ�
 
 ## 5. REST API
 
-ベース URL: `https://dwm-pkg-v2.tesatech.net/api/v1`
+ベース URL: `https://webhook-manager-cmk.uslog.tech/api/v1`
 認証: `Authorization: Bearer dwm_...`
 レート制限: APIキーごとに 120 リクエスト/分
 

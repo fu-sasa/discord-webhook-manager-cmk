@@ -33,7 +33,7 @@ npm run build && npm start
 ## API の例
 
 ```bash
-curl -X POST https://dwm-pkg-v2.tesatech.net/api/v1/messages \
+curl -X POST https://webhook-manager-cmk.uslog.tech/api/v1/messages \
   -H "Authorization: Bearer dwm_..." \
   -H "Content-Type: application/json" \
   -d '{

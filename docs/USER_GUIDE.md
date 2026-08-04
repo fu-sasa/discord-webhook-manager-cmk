@@ -2,7 +2,7 @@
 
 対象: WebUI から Discord への告知を送る人
 
-アクセス先: **https://dwm-pkg-v2.tesatech.net**
+アクセス先: **https://webhook-manager-cmk.uslog.tech**
 
 ## 1. ログイン
 

@@ -12,7 +12,7 @@ BACKUP_DIR=/var/backups/dwm
 SVC_USER=dwm
 SERVICE=discord-webhook-manager
 NODE_MAJOR=24
-PUBLIC_URL=${PUBLIC_BASE_URL:-https://dwm-pkg-v2.tesatech.net}
+PUBLIC_URL=${PUBLIC_BASE_URL:-https://webhook-manager-cmk.uslog.tech}
 BIND_PORT=${PORT:-8080}
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
