@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+
+# secrets & local data
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-wal
+*.db-shm

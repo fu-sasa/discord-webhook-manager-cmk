@@ -1,0 +1,12 @@
+[Unit]
+Description=Back up the Discord Webhook Manager database
+
+[Service]
+Type=oneshot
+User=dwm
+Group=dwm
+ExecStart=/opt/dwm/deploy/backup.sh
+ReadWritePaths=/var/lib/dwm /var/backups/dwm
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes

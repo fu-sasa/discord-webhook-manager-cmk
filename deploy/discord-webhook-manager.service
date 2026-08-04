@@ -1,0 +1,40 @@
+[Unit]
+Description=Discord Webhook Manager for CMK
+Documentation=https://github.com/fu-sasa/discord-webhook-manager-cmk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dwm
+Group=dwm
+WorkingDirectory=/opt/dwm
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning /opt/dwm/dist/index.js
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dwm
+
+# Hardening. The service only needs outbound HTTPS to Discord and its own
+# SQLite file; everything else on the box stays read-only or hidden.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/dwm
+# Node's JIT needs writable-executable pages, so W^X cannot be enforced here.
+MemoryDenyWriteExecute=no
+
+[Install]
+WantedBy=multi-user.target

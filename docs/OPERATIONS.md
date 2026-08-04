@@ -1,0 +1,210 @@
+# 運用マニュアル — Discord Webhook Manager for CMK
+
+対象: サーバーを管理する人
+
+## 0. 環境の要点
+
+| 項目 | 値 |
+|---|---|
+| ホスト | `uslog-pkg-v2`（Ubuntu 26.04 LXC / 4GB RAM） |
+| 接続 | `ssh uslog-pkg-v2`（`~/.ssh/config` で cloudflared 経由に設定済み） |
+| 認証情報 | root パスワードはパスワード管理ツールを参照（この文書には記載しません） |
+| 公開 URL | `https://dwm-pkg-v2.tesatech.net` |
+| アプリ | `/opt/dwm`（root 所有・読み取り専用運用） |
+| データ | `/var/lib/dwm/dwm.db`（`dwm` ユーザー所有） |
+| バックアップ | `/var/backups/dwm/dwm-YYYYMMDD-HHMMSS.db.gz`（14日保持） |
+| サービス | `discord-webhook-manager.service`, `dwm-backup.timer` |
+| 待ち受け | `127.0.0.1:8080`（外部から直接は到達できません） |
+
+## 1. 初回インストール
+
+```bash
+ssh uslog-pkg-v2
+git clone https://github.com/fu-sasa/discord-webhook-manager-cmk.git /opt/dwm
+/opt/dwm/deploy/install.sh
+```
+
+スクリプトが行うこと:
+
+1. Node.js 24 を NodeSource から導入（既に 22 以上があればスキップ）
+2. `sqlite3` / `git` / `curl` を導入
+3. システムユーザー `dwm` とデータ・バックアップディレクトリを作成
+4. `npm ci` → `npm run build` → 開発用依存を削除
+5. `.env` を生成（`APP_SECRET` と管理パスワードをランダム生成）
+6. systemd ユニットを登録して起動、日次バックアップタイマーを有効化
+7. ヘルスチェックを実行し、**管理パスワードを一度だけ表示**
+
+> 表示された管理パスワードは必ず控えてください。以後は再表示できません。忘れた場合は §7 の手順で
+> リセットします。ログイン後、設定画面から任意のパスワードに変更してください。
+
+### 1-1. Cloudflare Tunnel に公開ホスト名を追加（手動作業）
+
+このサーバーの `cloudflared` はトークン方式で、経路は Cloudflare 側で管理されています。
+サーバー内の設定変更では公開できません。
+
+1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Networks** → **Tunnels**
+2. `uslog-pkg-v2` に対応するトンネルを選択 → **Configure** → **Public Hostname** → **Add a public hostname**
+3. 次のように設定して保存
+
+   | 項目 | 値 |
+   |---|---|
+   | Subdomain | `dwm-pkg-v2` |
+   | Domain | `tesatech.net` |
+   | Type | `HTTP` |
+   | URL | `localhost:8080` |
+
+4. 数十秒後 `https://dwm-pkg-v2.tesatech.net/healthz` が JSON を返せば完了です
+
+> **推奨**: 同じ画面で **Access → Applications** にこのホスト名を登録し、メール認証などで
+> アプリ全体を保護すると二重防御になります。その場合、API を使う外部システム向けには
+> `/api/` パスをバイパスするポリシー、または Service Token を発行してください（Access を
+> 通さないと API リクエストがログイン画面に飛ばされます）。
+
+## 2. 日常運用
+
+### 状態確認
+
+```bash
+systemctl status discord-webhook-manager
+curl -s http://127.0.0.1:8080/healthz
+```
+
+`healthz` は認証不要で、待機中ジョブ数と失敗数を返します。
+
+```json
+{"status":"ok","version":"1.0.0","queued":3,"failed":0,"time":"2026-08-05T00:00:00.000Z"}
+```
+
+### ログ
+
+```bash
+journalctl -u discord-webhook-manager -f          # 追従
+journalctl -u discord-webhook-manager --since today
+journalctl -u discord-webhook-manager -p err      # エラーのみ
+```
+
+主なログ行:
+
+| 内容 | 意味 |
+|---|---|
+| `job job_xxx sent (name)` | 送信成功 |
+| `job job_xxx attempt N/5 failed …; retrying in Ns` | リトライ待ち |
+| `job job_xxx failed: …` | 最終的に失敗（アラートが飛びます） |
+| `job job_xxx rate limited, retrying in Ns` | Discord のレート制限に当たった |
+| `schedule sch_xxx (名前) fired` | 定期実行がジョブを生成 |
+| `recovered N job(s) left in 'sending'` | 前回の異常終了から復帰した |
+
+### 再起動 / 停止
+
+```bash
+systemctl restart discord-webhook-manager
+systemctl stop discord-webhook-manager
+```
+
+停止中の予約は失われません。24時間以内であれば再起動後に送信されます（それを超えたものは
+「misfire」として送信されず失敗扱いになります）。
+
+## 3. 更新
+
+```bash
+ssh uslog-pkg-v2
+/opt/dwm/deploy/update.sh
+```
+
+バックアップ → `git pull` → `npm ci` → ビルド → 再起動 → ヘルスチェック まで行います。
+DB マイグレーションは起動時に自動適用されます。
+
+## 4. バックアップと復旧
+
+### 取得
+
+日次 04:15 に自動取得されます。手動で取る場合:
+
+```bash
+sudo -u dwm /opt/dwm/deploy/backup.sh
+ls -lh /var/backups/dwm/
+```
+
+### 復旧
+
+```bash
+systemctl stop discord-webhook-manager
+gunzip -c /var/backups/dwm/dwm-20260805-041500.db.gz > /tmp/restore.db
+sudo -u dwm cp /tmp/restore.db /var/lib/dwm/dwm.db
+rm -f /var/lib/dwm/dwm.db-wal /var/lib/dwm/dwm.db-shm
+systemctl start discord-webhook-manager
+```
+
+> **重要**: `/opt/dwm/.env` も必ず別途保管してください。`APP_SECRET` を失うと、
+> DB を復旧しても保存済みの Webhook URL を復号できず、named webhook の再登録が必要になります。
+
+### 別ホストへの移設
+
+`/opt/dwm/.env` と `/var/lib/dwm/dwm.db` の2つを持っていけば、そのまま同じ状態で動きます。
+
+## 5. 監視のすすめ
+
+- **失敗アラート**: WebUI の「設定」で通知先の named webhook を指定してください。未設定だと
+  ダッシュボードに警告が出ます
+- **外形監視**: `https://dwm-pkg-v2.tesatech.net/healthz` を Uptime 監視に登録
+- **キュー滞留**: `healthz` の `queued` が想定より大きい状態が続く場合はスケジューラの停止を疑います
+
+## 6. トラブルシュート
+
+| 症状 | 確認 | 対処 |
+|---|---|---|
+| サービスが起動しない | `journalctl -u discord-webhook-manager -n 50` | `APP_SECRET` が64桁の16進か、ポート 8080 が空いているかを確認 |
+| `failed to start: listen EADDRINUSE` | `ss -tlnp \| grep 8080` | 旧プロセスを停止するか `.env` の `PORT` を変更 |
+| 公開 URL に繋がらない | `curl http://127.0.0.1:8080/healthz` | ローカルで応答するなら Cloudflare の Public Hostname 設定側の問題 |
+| ログインできない | — | §7 のパスワードリセット |
+| ログインしてもすぐ弾かれる | ブラウザの Cookie | HTTP で検証中なら `.env` の `COOKIE_SECURE=0`（本番は必ず `1`） |
+| 送信が `failed` HTTP 404 | ジョブ詳細のエラー欄 | Discord 側で Webhook が削除されています。URL を再発行して差し替え |
+| 送信が `failed` HTTP 401/403 | 同上 | Webhook のトークンが無効。URL を差し替え |
+| 送信が `failed` HTTP 400 | 同上 | ペイポードが Discord に拒否されています。Embed の文字数や画像 URL を確認 |
+| `misfire` で失敗した | — | サービスが24時間以上停止していました。必要なら再送してください |
+| 予約が実行されない | `systemctl status` | スケジューラはアプリ内で動くため、サービスが止まっていれば実行されません |
+
+### 手動で DB を覗く
+
+```bash
+sudo -u dwm sqlite3 /var/lib/dwm/dwm.db \
+  "SELECT public_id, status, target_label, scheduled_at, last_error FROM jobs ORDER BY id DESC LIMIT 20;"
+```
+
+## 7. 管理パスワードのリセット
+
+パスワードを忘れた場合、DB のハッシュを削除すると次回起動時に `.env` の `ADMIN_PASSWORD`（または
+自動生成値）で初期化されます。
+
+```bash
+systemctl stop discord-webhook-manager
+sudo -u dwm sqlite3 /var/lib/dwm/dwm.db "DELETE FROM settings WHERE key='admin_password_hash';"
+# .env の ADMIN_PASSWORD を希望のパスワード（12文字以上）に書き換える
+systemctl start discord-webhook-manager
+journalctl -u discord-webhook-manager -n 20   # 自動生成の場合はここに1回だけ表示されます
+```
+
+全セッションを強制ログアウトしたい場合:
+
+```bash
+sudo -u dwm sqlite3 /var/lib/dwm/dwm.db "DELETE FROM sessions;"
+```
+
+## 8. シークレットの管理方針
+
+| 対象 | 保管場所 | 備考 |
+|---|---|---|
+| サーバー root パスワード | パスワード管理ツール | この文書・リポジトリには記載しない |
+| `APP_SECRET` | `/opt/dwm/.env` + パスワード管理ツール | 失うと Webhook URL を復号できない |
+| 管理パスワード | パスワード管理ツール | 設定画面から変更可能 |
+| API キー | 発行時に受け取った側で保管 | 再表示不可。紛失時は失効させて再発行 |
+| Discord Webhook URL | 本システム内（暗号化） | 平文は Discord の管理画面から再取得 |
+
+`.env` と DB はどちらも `git` の管理外です（`.gitignore` 済み）。
+
+## 9. 定期的に見るとよいもの
+
+- **設定 → 操作ログ**: 誰がいつ何を変更したか
+- **APIキー → 最終利用**: 使われていないキーは失効させる
+- **Webhook 一覧**: 使わなくなったものは無効化または削除
+- **送信履歴（失敗で絞り込み）**: 恒常的に失敗している宛先がないか
