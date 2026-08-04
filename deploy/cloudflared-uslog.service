@@ -1,0 +1,20 @@
+[Unit]
+Description=Cloudflare Tunnel client (uslog.tech account)
+Documentation=https://github.com/fu-sasa/discord-webhook-manager-cmk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+TimeoutStartSec=15
+Type=notify
+# A second, independent connector. It does NOT replace the pre-existing
+# `cloudflared.service`, which carries this host's SSH route — killing that one
+# would lock everyone out of the box.
+# The metrics port is pinned so the two instances cannot race for 20241.
+ExecStart=/usr/bin/cloudflared --no-autoupdate --metrics 127.0.0.1:20242 tunnel run --token-file /etc/cloudflared/token-uslog
+Restart=on-failure
+RestartSec=5s
+SyslogIdentifier=cloudflared-uslog
+
+[Install]
+WantedBy=multi-user.target

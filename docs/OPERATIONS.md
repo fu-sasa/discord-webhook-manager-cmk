@@ -40,11 +40,25 @@ git clone https://github.com/fu-sasa/discord-webhook-manager-cmk.git /opt/dwm
 ### 1-1. Cloudflare Tunnel に公開ホスト名を追加（手動作業）
 
 このサーバーの `cloudflared` はトークン方式で、経路は Cloudflare 側で管理されています。
-サーバー内の設定変更では公開できません。
+サーバー内の設定変更だけでは公開できません。
 
-1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Networks** → **Tunnels**
-2. `uslog-pkg-v2` に対応するトンネルを選択 → **Configure** → **Public Hostname** → **Add a public hostname**
-3. 次のように設定して保存
+**トンネルは、自分と同じ Cloudflare アカウントのゾーンにしかルートを作れません。**
+`uslog.tech` は既存トンネル（`tesatech.net` 側のアカウント）とは別アカウントのゾーンなので、
+`uslog.tech` を持つアカウントで**2本目のトンネルを作成**します。
+
+> **既存トンネルのトークンを差し替えてはいけません。** このホストの SSH は既存の
+> `cloudflared.service` が中継しています。差し替えるとその経路が消え、Proxmox の
+> コンソール以外から入れなくなります。2本のコネクタは互いに干渉せず並走できます。
+
+#### 手順 A — Cloudflare 側（`uslog.tech` のアカウントで）
+
+1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) を **`uslog.tech` を持つアカウント**で開く
+   （右上のアカウント切り替えで、ゾーン一覧に `uslog.tech` が見える方を選ぶ）
+2. **Networks → Tunnels → Create a tunnel** → **Cloudflared** を選択
+3. 名前を `uslog-pkg-v2-web` などにして **Save tunnel**
+4. インストール手順の画面が出るので、**コマンドは実行せずトークンだけコピー**します。
+   `cloudflared service install eyJhIjoi....` の `eyJ` 以降の長い文字列が該当部分です
+5. いったんこの画面のまま **Next** に進み、Public Hostname を設定
 
    | 項目 | 値 |
    |---|---|
@@ -53,13 +67,32 @@ git clone https://github.com/fu-sasa/discord-webhook-manager-cmk.git /opt/dwm
    | Type | `HTTP` |
    | URL | `localhost:8080` |
 
-4. 数十秒後 `https://webhook-manager-cmk.uslog.tech/healthz` が JSON を返せば完了です
+#### 手順 B — サーバー側（2本目のコネクタを追加）
 
-> **前提**: Domain のプルダウンに `uslog.tech` が出てこない場合、そのゾーンがこのトンネルとは
-> 別の Cloudflare アカウントにあります。トンネルは自分と同じアカウントのゾーンにしかルートを
-> 作れません。その場合は、`uslog.tech` を持つアカウント側で新しいトンネルを作成し、
-> `/etc/cloudflared/token` を差し替えて `systemctl restart cloudflared` してください
-> （SSH も同じトンネルを通っているため、切り替え前に別の接続経路を確保しておくこと）。
+```bash
+ssh uslog-pkg-v2
+/opt/dwm/deploy/add-tunnel.sh uslog
+# プロンプトが出たらトークンを貼り付けて Enter
+```
+
+スクリプトはトークンの形式を検証してから `/etc/cloudflared/token-uslog` に 600 で保存し、
+`cloudflared-uslog.service` を起動します。**既存の `cloudflared.service` には一切触れず**、
+処理の最後にそれがまだ `active` であることを確認します（落ちていたらエラー終了）。
+
+メトリクスポートは既存が 20241、新規は 20242 に固定してあるので衝突しません。
+
+#### 手順 C — 確認
+
+```bash
+systemctl status cloudflared cloudflared-uslog   # 両方 active であること
+curl -s https://webhook-manager-cmk.uslog.tech/healthz
+```
+
+数十秒で JSON が返れば完了です。
+
+> **切り分け**: `healthz` が返らないときは、まずサーバー上で
+> `curl -s http://127.0.0.1:8080/healthz` を試します。ローカルで応答するならアプリは正常で、
+> 原因は Cloudflare 側（Public Hostname の未設定、または別アカウントのトンネルに設定した）です。
 
 > **推奨**: 同じ画面で **Access → Applications** にこのホスト名を登録し、メール認証などで
 > アプリ全体を保護すると二重防御になります。その場合、API を使う外部システム向けには
