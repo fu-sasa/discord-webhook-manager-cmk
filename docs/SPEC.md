@@ -17,7 +17,7 @@ Discord の Webhook URL は、それ自体が「そのチャンネルに投稿�
 ## 2. 全体構成
 
 ```
-                  ┌──────────────────────────── uslog-pkg-v2 (Ubuntu 26.04 LXC) ───┐
+                  ┌──────────────────────────── uslog-temp-comicmarket (Ubuntu 26.04 LXC) ───┐
   ブラウザ ─┐      │                                                                │
             ├─→ Cloudflare Tunnel ─→ 127.0.0.1:8080  systemd: discord-webhook-manager│
   外部システム┘     │                          │                                     │

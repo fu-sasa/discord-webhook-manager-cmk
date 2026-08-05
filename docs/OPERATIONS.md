@@ -6,8 +6,8 @@
 
 | 項目 | 値 |
 |---|---|
-| ホスト | `uslog-pkg-v2`（Ubuntu 26.04 LXC / 4GB RAM） |
-| 接続 | `ssh uslog-pkg-v2`（`~/.ssh/config` で cloudflared 経由に設定済み） |
+| ホスト | `uslog-temp-comicmarket`（Ubuntu 26.04 LXC / 1GB RAM / 2 vCPU）<br>2026-08-05 に `uslog-pkg-v2` から移設 |
+| 接続 | `ssh uslog-temp-comicmarket`（`~/.ssh/config` で cloudflared 経由に設定済み） |
 | 認証情報 | root パスワードはパスワード管理ツールを参照（この文書には記載しません） |
 | 公開 URL | `https://webhook-manager-cmk.uslog.tech` |
 | アプリ | `/opt/dwm`（root 所有・読み取り専用運用） |
@@ -19,7 +19,7 @@
 ## 1. 初回インストール
 
 ```bash
-ssh uslog-pkg-v2
+ssh uslog-temp-comicmarket
 git clone https://github.com/fu-sasa/discord-webhook-manager-cmk.git /opt/dwm
 /opt/dwm/deploy/install.sh
 ```
@@ -55,7 +55,7 @@ git clone https://github.com/fu-sasa/discord-webhook-manager-cmk.git /opt/dwm
 1. [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) を **`uslog.tech` を持つアカウント**で開く
    （右上のアカウント切り替えで、ゾーン一覧に `uslog.tech` が見える方を選ぶ）
 2. **Networks → Tunnels → Create a tunnel** → **Cloudflared** を選択
-3. 名前を `uslog-pkg-v2-web` などにして **Save tunnel**
+3. 名前を `webhook-manager-cmk` などにして **Save tunnel**
 4. インストール手順の画面が出るので、**コマンドは実行せずトークンだけコピー**します。
    `cloudflared service install eyJhIjoi....` の `eyJ` 以降の長い文字列が該当部分です
 5. いったんこの画面のまま **Next** に進み、Public Hostname を設定
@@ -75,7 +75,7 @@ git clone https://github.com/fu-sasa/discord-webhook-manager-cmk.git /opt/dwm
 #### 手順 B — サーバー側（2本目のコネクタを追加）
 
 ```bash
-ssh uslog-pkg-v2
+ssh uslog-temp-comicmarket
 /opt/dwm/deploy/add-tunnel.sh uslog
 # プロンプトが出たらトークンを貼り付けて Enter
 ```
@@ -134,7 +134,7 @@ WebUI のログインは Discord OAuth2 です。許可リストに登録され�
 #### サーバー側
 
 ```bash
-ssh uslog-pkg-v2
+ssh uslog-temp-comicmarket
 /opt/dwm/deploy/set-discord-auth.sh
 ```
 
@@ -215,7 +215,7 @@ systemctl stop discord-webhook-manager
 ## 3. 更新
 
 ```bash
-ssh uslog-pkg-v2
+ssh uslog-temp-comicmarket
 /opt/dwm/deploy/update.sh
 ```
 
@@ -248,7 +248,71 @@ systemctl start discord-webhook-manager
 
 ### 別ホストへの移設
 
-`/opt/dwm/.env` と `/var/lib/dwm/dwm.db` の2つを持っていけば、そのまま同じ状態で動きます。
+必要なのは3つのファイルだけです。**Cloudflare ダッシュボードの操作は不要**です。
+
+| 持っていくもの | 理由 |
+|---|---|
+| `/opt/dwm/.env` | `APP_SECRET`（これを失うと保存済み Webhook URL を復号できない）と Discord 認証情報 |
+| `/var/lib/dwm/dwm.db` | webhook・管理者・設定・履歴 |
+| `/etc/cloudflared/token-uslog` | 公開ホスト名は**トンネル**に紐づくので、トークンを移せば経路も移る |
+
+手順（2026-08-05 に実施した実績のある流れ）:
+
+```bash
+# --- 旧ホスト: 一貫性のあるスナップショットを取る ---
+sqlite3 /var/lib/dwm/dwm.db "VACUUM INTO '/tmp/mig.db'"
+cp /opt/dwm/.env /tmp/mig.env
+cp /etc/cloudflared/token-uslog /tmp/mig.token-uslog
+# 3ファイルを手元に転送（sha256sum で一致を確認すること）
+
+# --- 新ホスト: .env を先に置いてから install.sh を走らせる ---
+git clone https://github.com/fu-sasa/discord-webhook-manager-cmk.git /opt/dwm
+install -m 600 /tmp/mig.env /opt/dwm/.env      # ← install.sh より前に置くのが肝
+/opt/dwm/deploy/install.sh                     # .env があれば生成をスキップする
+
+# --- 新ホスト: DB を差し替える ---
+systemctl stop discord-webhook-manager
+install -o dwm -g dwm -m 644 /tmp/mig.db /var/lib/dwm/dwm.db
+rm -f /var/lib/dwm/dwm.db-wal /var/lib/dwm/dwm.db-shm   # 古い WAL が残ると復元を上書きする
+systemctl start discord-webhook-manager
+
+# --- 新ホスト: トンネルを引き継ぐ ---
+install -m 600 /tmp/mig.token-uslog /etc/cloudflared/token-uslog
+install -m 644 /opt/dwm/deploy/cloudflared-uslog.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now cloudflared-uslog
+
+# --- 旧ホスト: 手放す（これをするまで両方にトラフィックが分散します） ---
+systemctl disable --now cloudflared-uslog discord-webhook-manager dwm-backup.timer
+
+# --- 後始末: 秘密情報を含む一時ファイルを消す ---
+shred -u /tmp/mig.env /tmp/mig.token-uslog; rm -f /tmp/mig.db
+```
+
+> **`.env` を install.sh より先に置く理由**: install.sh は `.env` が無いと新しい `APP_SECRET` を
+> 生成します。後から差し替えると、その間に作られた DB との整合は取れますが、移設元の DB を
+> 復元した瞬間に Webhook URL が復号できなくなります。
+
+移設後の確認（送信を発生させずに検証できます）:
+
+```bash
+# 1. APP_SECRET が生きているか＝保存済み URL が復号できるか
+sudo -u dwm node -e '
+  const {DatabaseSync}=require("node:sqlite");
+  import("/opt/dwm/dist/lib/crypto.js").then(({decrypt})=>{
+    for (const r of new DatabaseSync("/var/lib/dwm/dwm.db")
+        .prepare("SELECT name,url_enc FROM named_webhooks").all())
+      console.log(r.name, decrypt(r.url_enc).slice(0,40)+"…");
+  });'
+
+# 2. Discord の認証情報が有効か（ログインせずに確認できる）
+CID=$(grep ^DISCORD_CLIENT_ID= /opt/dwm/.env | cut -d= -f2-)
+CSEC=$(grep ^DISCORD_CLIENT_SECRET= /opt/dwm/.env | cut -d= -f2-)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://discord.com/api/v10/oauth2/token \
+  -u "$CID:$CSEC" -d grant_type=client_credentials -d scope=identify    # 200 なら有効
+
+# 3. 公開 URL が新ホストから返っているか（旧ホストのアプリを止めた状態で）
+curl -s https://webhook-manager-cmk.uslog.tech/healthz
+```
 
 ## 5. 監視のすすめ
 
